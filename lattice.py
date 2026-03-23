@@ -7,17 +7,41 @@ from scipy.sparse import bmat, diags
 
 class Graphene:
 
-  def __init__(self, nmax, onsite_energy=(0,0), J = 1., J_prime = 0, anisotropy_J=0, pbc=None, eps_onsite = 0, seed=42):
+  def __init__(
+        self,
+        nmax,
+        onsite_energy_sign=(1,-1),
+        J = 1.,
+        delta_0 = 0.,
+        x0 = 0.,
+        lambda_0 = 0.1,
+        domain_wall_angle=0.,
+        J_prime = 0,
+        anisotropy_J=0,
+        pbc=None,
+        eps_onsite = 0,
+        seed=42):
+    
     self.nmax = nmax
     self.mid_point = np.array([nmax - 1, nmax-1], dtype=int) / 2
     self.la = self.lb = nmax ** 2
-    self.onsite_energy = {"A": onsite_energy[0], "B": onsite_energy[1]}
+    self.onsite_energy_sign = {"A": onsite_energy_sign[0], "B": onsite_energy_sign[1]}
     self.J = J
     self.J_prime = J_prime
     self.anisotropy_J= anisotropy_J
 
+    self.a = 1.
+    self.a1 = 0.5 * np.array([np.sqrt(3.), 3.])
+    self.a2 = 0.5 * np.array([-np.sqrt(3.), 3.])
+
+    self.delta_0 = delta_0
+    self.x0 = x0
+    self.lambd = lambda_0
+
+    self.theta = np.radians(domain_wall_angle)
+
     self.eps_onsite = eps_onsite
-    
+
     if self.eps_onsite:
       np.random.seed(seed)
     
@@ -28,6 +52,7 @@ class Graphene:
     self.pbc = pbc
     
     self.coord_map = self._create_coordinates_map(shape=(nmax, nmax))
+    self._compute_domain_wall()
 
   def _generate_off_diag_block(self):
     ks = [0, 1, self.nmax]
@@ -77,11 +102,20 @@ class Graphene:
 
       return non_pbc_part + other_diagonals
 
+  def _compute_domain_wall(self):
+    na, nb = self.n_real_pos
+
+    n = np.array([np.cos(self.theta), np.sin(self.theta)])
+    self.delta = {
+      "A" : self.delta_0 * np.tanh((na.T @ n)/self.lambd),
+      "B" : self.delta_0 * np.tanh((nb.T @ n)/self.lambd)
+      }
+
   def _generate_main_diag_block(self, site):
-    energy = self.onsite_energy[site]
+    energy_sign = self.onsite_energy_sign[site]
     n = self.num_sites(site)
-    onsite_energies_diag = np.full(n, energy)
-    
+    onsite_energies_diag = np.full(n, energy_sign) * self.delta[site]
+
     if self.eps_onsite:
       noise_onsite_energies = (np.random.rand(n) - 0.5)* self.eps_onsite
       onsite_energies_diag += noise_onsite_energies
@@ -157,7 +191,6 @@ class Graphene:
 
   @property
   def hamiltonian(self):
-
     Haa  = self._generate_main_diag_block(site="A")
     Hbb  = self._generate_main_diag_block(site="B")
     Hab  = self._generate_off_diag_block()
@@ -185,6 +218,22 @@ class Graphene:
         "B": {(i - avg_x, j - avg_y) : b[j,i] for i in range(x) for j in range(y)},
       }
 
+  @property
+  def n_real_pos(self):
+    coord_map = self.coord_map
+    inv_mapA = {value : key for key, value in coord_map['A'].items()}
+
+    m = np.array([(nx, ny) for _, (nx,ny) in sorted(inv_mapA.items())])
+
+    Ma = np.array([self.a1, self.a2]).T
+
+    na = Ma @ m.T
+
+    nb = na.copy()
+    # assuming lattice constant a = 1
+    nb[1] = nb[1] - self.a
+
+    return na, nb
   @property
   def edge_points(self):
     x_max, y_max = max(self.coord_map["A"].keys())
@@ -343,7 +392,7 @@ class Graphene:
 
 if __name__ == "__main__":
   CMAP = 'hot'
-  lattice=Graphene(nmax=4, onsite_energy=(0.0, 0.0), pbc="y", J=-1, J_prime=1, eps_onsite=1)
+  lattice=Graphene(nmax=4, onsite_energy_sign=(1, -1), pbc="y")
   Haa = lattice._generate_main_diag_block("A").todense()
   Hbb = lattice._generate_main_diag_block("B").todense()
   Hab = lattice._generate_off_diag_block().todense()
