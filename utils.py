@@ -167,33 +167,40 @@ def draw_vectors(ax, vectors: list[np.ndarray], axis_fraction: tuple[float, floa
 
             ax.text(label_x, label_y, label, fontsize=fontsize, ha=ha, va=va, color=color)
 
-def draw_basis_vectors(ax, vectors, scale = None, pos = (0.9, 0.05)):
+def draw_basis_vectors(ax, vectors, labels= (r"$\vec{a}_1$", r"$\vec{a}_2$"), scale = None, pos = (0.9, 0.05), color="white", fontsize=12, width = 0.007):
     if not scale:
         RATIO = 0.075
         xlim = ax.get_xlim()
-        x_axis_size = xlim[1] - xlim[0]
+        ylim = ax.get_ylim()
 
-        scale = RATIO * x_axis_size
-    unit_vectors = [vectors[0] * scale, vectors[1] * scale]
+        x_axis_size = xlim[1] - xlim[0]
+        y_axis_size = ylim[1] - ylim[0]
+
+        scale = (
+            RATIO * x_axis_size,
+            RATIO * y_axis_size)
+    unit_vectors = [vectors[0] * scale[0], vectors[1] * scale[1]]
 
     
 
     vector_configs = [
         {
-            'label': r"$\vec{a}_1$",
-            'color': "white",
+            'label': labels[0],
+            'color': color,
             'ha': "center",
             'va': "bottom",
-            'width': 0.007,  # Set width for the vector
+            'width':width,  # Set width for the vector
             # 'label_offset': 0.3  # Specific label offset for this vector
+            'fontsize': fontsize
         },
         {
-            'label': r"$\vec{a}_2$",
-            'color': "white",
+            'label': labels[1],
+            'color': color,
             'ha': "center",
             'va': "bottom",
-            'width': 0.007,  # Set width for the vector
+            'width':width,  # Set width for the vector
             # 'label_offset': 0.1  # Specific label offset for this vector
+            'fontsize': fontsize
         }
     ]
     draw_vectors(ax, unit_vectors, pos, vector_configs)
@@ -264,14 +271,31 @@ def get_real_lattice_sites_position(Nx, Ny):
 
     return na, nb
 
-def plot_graphene(Nx, Ny, Cna, Cnb, ax, s=5, cmap="hot", vmin=None, vmax=None, logscale=None):
-    na, nb = get_real_lattice_sites_position(Nx, Ny)
 
+def rescale_log(x):
+    return (x - x.min())/ (x.max() - x.min())
+
+def plot_graphene(na, nb, Cna, Cnb, ax, 
+                  s=5, cmap="hot", vmin=None, vmax=None, logscale=None, rasterize=True, edgecolors=None, rescale_to_0_1=False):
     if logscale:
         Cna = np.log10(Cna)
         Cnb = np.log10(Cnb)
+        if rescale_to_0_1:
 
-    im = ax.scatter(na[0], na[1] ,c=Cna, s=s, label="A", cmap=cmap, vmin=vmin, vmax=vmax)
-    ax.scatter(nb[0], nb[1], c=Cnb, s=s, label="B", cmap=cmap, vmin=vmin, vmax=vmax)
+            Cna = np.clip(Cna, a_max=vmax, a_min=vmin)
+            Cnb = np.clip(Cnb, a_max=vmax, a_min=vmin)
+
+            Cna = rescale_log(Cna)
+            Cnb = rescale_log(Cnb)
+
+            vmax=None
+            vmin=None
+
+    if rescale_to_0_1:
+        Cna /= Cna.max()
+        Cnb /= Cnb.max()
+
+    im = ax.scatter(na[0], na[1] ,c=Cna, edgecolors=edgecolors, s=s, label="A", cmap=cmap, vmin=vmin, vmax=vmax, rasterized=rasterize)
+    ax.scatter(nb[0], nb[1], c=Cnb,edgecolors=edgecolors, s=s, label="B", cmap=cmap, vmin=vmin, vmax=vmax,rasterized=rasterize)
 
     return im

@@ -6,7 +6,6 @@ from scipy.sparse import bmat, diags
 
 
 class Graphene:
-
   def __init__(
         self,
         nmax,
@@ -31,14 +30,20 @@ class Graphene:
     self.anisotropy_J= anisotropy_J
 
     self.a = 1.
-    self.a1 = 0.5 * np.array([np.sqrt(3.), 3.])
-    self.a2 = 0.5 * np.array([-np.sqrt(3.), 3.])
+    # self.a1 = 0.5 * np.array([np.sqrt(3.), 3.])
+    # self.a2 = 0.5 * np.array([-np.sqrt(3.), 3.])
+
+
+  # Lattice Vectors for graphene
+    self.a1 = np.sqrt(3)/2 * np.array([np.sqrt(3), 1.])
+    self.a2 = np.sqrt(3) * np.array([0, 1.])
+    self.d1 = -0.5 * np.array([1., np.sqrt(3)])
 
     self.delta_0 = delta_0
     self.x0 = x0
     self.lambd = lambda_0
 
-    self.theta = np.radians(domain_wall_angle)
+    self.theta = np.deg2rad(domain_wall_angle)
 
     self.eps_onsite = eps_onsite
 
@@ -68,7 +73,7 @@ class Graphene:
     if not self.pbc:
       return non_pbc_part
 
-    if self.pbc == "x":
+    if self.pbc == "y":
       offset = -self.nmax + 1
       extra_diagonals = np.zeros((self.nmax ** 2) - (self.nmax - 1))
       extra_diagonals[::self.nmax] = -self.J
@@ -77,7 +82,7 @@ class Graphene:
 
       return non_pbc_part + other_diagonals
 
-    if self.pbc == "y":
+    if self.pbc == "x":
       offset = -self.la + self.nmax
       extra_diagonals = np.full(self.nmax, -self.J)
       other_diagonals = diags(extra_diagonals, offset, shape=(self.la, self.la))
@@ -105,10 +110,14 @@ class Graphene:
   def _compute_domain_wall(self):
     na, nb = self.n_real_pos
 
-    n = np.array([np.cos(self.theta), np.sin(self.theta)])
+# Note that the direction of the domain wall is always perpendicular to the 
+# direction of the frequency gradient
+    # m = np.array([-np.sin(self.theta), np.cos(self.theta)]) 
+
+    m = np.array([np.cos(self.theta), np.sin(self.theta)])
     self.delta = {
-      "A" : self.delta_0 * np.tanh((na.T @ n)/self.lambd),
-      "B" : self.delta_0 * np.tanh((nb.T @ n)/self.lambd)
+      "A" : self.delta_0 * np.tanh((na.T @ m)/self.lambd),
+      "B" : self.delta_0 * np.tanh((nb.T @ m)/self.lambd)
       }
 
   def _generate_main_diag_block(self, site):
@@ -229,9 +238,8 @@ class Graphene:
 
     na = Ma @ m.T
 
-    nb = na.copy()
-    # assuming lattice constant a = 1
-    nb[1] = nb[1] - self.a
+    nb = na.copy() + self.d1.reshape(2,1)
+
 
     return na, nb
   @property
@@ -253,10 +261,10 @@ class Graphene:
     a_positions = self.coord_map["A"].keys()
     b_positions = self.coord_map["B"].keys()
 
-    a1 = 0.5 * np.array([np.sqrt(3.), 3.])
-    a2 = 0.5 * np.array([-np.sqrt(3.), 3.])
+    a1 = self.a1
+    a2 = self.a2
 
-    delta = a * np.array([0,-1.])
+    delta = self.d1
 
     Ma = np.array([a1, a2]).T
 
@@ -389,6 +397,282 @@ class Graphene:
             ]
         }
 
+class GrapheneArmchair:
+    """
+    Graphene with ARMCHAIR edges (x-direction) and ZIGZAG edges (y-direction).
+
+    Built from a 4-atom rectangular supercell (2 A + 2 B), tiled nx x ny times.
+        Cell vectors: R1 = (sqrt(3), 0),  R2 = (0, 3)        (bond length = 1)
+        Basis:  A1 = (sqrt(3)/2, 0)     A2 = (0,         3/2)
+                B1 = (0,         1/2)   B2 = (sqrt(3)/2, 2  )
+
+    Indexing:
+        - Every site has a flat index in [0, 4*nx*ny).
+        - A-sublattice occupies [0, 2*nx*ny);  B occupies [2*nx*ny, 4*nx*ny).
+        - Within a sublattice, flat_idx = 2*(j*nx + i) + b   where b in {0, 1}.
+    """
+
+    def __init__(self, nx, ny=None, onsite_energy_sign=(1, -1), J=1.,
+                 delta_0=0., lambda_0=0.1, domain_wall_angle=0., x0=0.,
+                 pbc=None, eps_onsite=0, seed=42):
+        if ny is None:
+            ny = nx
+        self.nx, self.ny = nx, ny
+        self.J = J
+        self.la = self.lb = 2 * nx * ny
+        self.onsite_energy_sign = {"A": onsite_energy_sign[0], "B": onsite_energy_sign[1]}
+
+        # --- Geometry ---
+        self.R1 = np.array([np.sqrt(3), 0.])
+        self.R2 = np.array([0.,          3.])
+        self.basis = {
+            ("A", 0): np.array([np.sqrt(3) / 2, 0.0]),   # A1
+            ("A", 1): np.array([0.0,            1.5]),   # A2
+            ("B", 0): np.array([0.0,            0.5]),   # B1
+            ("B", 1): np.array([np.sqrt(3) / 2, 2.0]),   # B2
+        }
+
+        # --- Physics params ---
+        self.delta_0 = delta_0
+        self.lambd = lambda_0
+        self.theta = np.deg2rad(domain_wall_angle)
+        self.x0 = x0
+        self.eps_onsite = eps_onsite
+        if eps_onsite:
+            np.random.seed(seed)
+
+        if pbc not in (None, "x", "y", "xy"):
+            raise ValueError("pbc must be None, 'x', 'y', or 'xy'")
+        self.pbc = pbc
+
+        # --- Maps + domain wall ---
+        self.coord_map = self._create_coordinates_map(nx, ny, la=self.la)
+        self._compute_domain_wall()
+
+    # ======================================================================
+    # Methods kept from the original class (same names / same contracts)
+    # ======================================================================
+
+    @staticmethod
+    def _create_coordinates_map(nx_, ny_, la):
+        """
+        {"A": {(i_centered, j_centered, b): flat_idx}, "B": {...}}
+
+        Keys are 3-tuples because each rectangular cell now carries two
+        atoms per sublattice (b in {0, 1}).  Cell indices are centered on
+        (avg_x, avg_y) = (nx//2, ny//2) -- same convention as the original.
+        """
+        avg_x, avg_y = nx_ // 2, ny_ // 2
+        cmap = {"A": {}, "B": {}}
+        for sub, offset in (("A", 0), ("B", la)):
+            for j in range(ny_):
+                for i in range(nx_):
+                    for b in (0, 1):
+                        flat = offset + 2 * (j * nx_ + i) + b
+                        cmap[sub][(i - avg_x, j - avg_y, b)] = flat
+        return cmap
+
+    @property
+    def n_real_pos(self):
+        """
+        Real-space positions of every site, separated by sublattice.
+
+        Returns:
+            na : np.ndarray, shape (2, la)   -- columns are (x, y) of A sites
+            nb : np.ndarray, shape (2, lb)   -- columns are (x, y) of B sites
+        Same shape/contract as the original class, so _compute_domain_wall
+        and any downstream code keep working unchanged.
+        """
+        inv = {v: k for k, v in self.coord_map["A"].items()}
+        keys_sorted = [inv[k] for k in sorted(inv)]  # ascending flat index
+        na = np.empty((2, self.la))
+        nb = np.empty((2, self.lb))
+        for flat, (ic, jc, b) in enumerate(keys_sorted):
+            i, j = ic + self.nx // 2, jc + self.ny // 2
+            cell_origin = i * self.R1 + j * self.R2
+            na[:, flat] = cell_origin + self.basis[("A", b)]
+            nb[:, flat] = cell_origin + self.basis[("B", b)]
+        return na, nb
+
+    def num_sites(self, kind="all") -> int:
+        match kind.upper():
+            case "A":   return self.la
+            case "B":   return self.lb
+            case "ALL": return self.la + self.lb
+            case _:     return None
+
+    def _compute_domain_wall(self):
+        """Same as original: tanh wall along m=(cos θ, sin θ)."""
+        na, nb = self.n_real_pos
+        m = np.array([np.cos(self.theta), np.sin(self.theta)])
+        self.delta = {
+            "A": self.delta_0 * np.tanh((na.T @ m) / self.lambd),
+            "B": self.delta_0 * np.tanh((nb.T @ m) / self.lambd),
+        }
+
+    @property
+    def edge_points(self):
+        """(x_max, y_max, x_min, y_min) of centered cell indices."""
+        xs = [k[0] for k in self.coord_map["A"].keys()]
+        ys = [k[1] for k in self.coord_map["A"].keys()]
+        return max(xs), max(ys), min(xs), min(ys)
+
+    def get_edge_points(self):
+        """
+        Flat indices of atoms on the OPEN edges, grouped by sublattice.
+            pbc='y'  -> two armchair edges (left/right)
+            pbc='x'  -> two zigzag edges (top/bottom)
+            pbc='xy' -> {} (no open edges)
+            pbc=None -> all four edges
+        """
+        if self.pbc == "xy":
+            return {"A": [], "B": []}
+
+        ax, ay = self.nx // 2, self.ny // 2
+        def fA(i, j, b): return self.coord_map["A"][(i - ax, j - ay, b)]
+        def fB(i, j, b): return self.coord_map["B"][(i - ax, j - ay, b)]
+
+        edges = {"A": [], "B": []}
+
+        if self.pbc in (None, "y"):   # armchair L/R are open
+            left_A  = [fA(0, j, 1)            for j in range(self.ny)]   # A2
+            right_A = [fA(self.nx - 1, j, 0)  for j in range(self.ny)]   # A1
+            left_B  = [fB(0, j, 0)            for j in range(self.ny)]   # B1
+            right_B = [fB(self.nx - 1, j, 1)  for j in range(self.ny)]   # B2
+            edges["A"] += [left_A, right_A]
+            edges["B"] += [left_B, right_B]
+
+        if self.pbc in (None, "x"):   # zigzag T/B are open
+            bottom_A = [fA(i, 0, 0)           for i in range(self.nx)]   # A1 row
+            top_B    = [fB(i, self.ny - 1, 1) for i in range(self.nx)]   # B2 row
+            edges["A"] += [bottom_A]
+            edges["B"] += [top_B]
+
+        return edges
+
+    # ======================================================================
+    # Hamiltonian
+    # ======================================================================
+
+    def _bond_list(self):
+        """
+        A1(i,j) -> B1(i,j),  B1(i+1,j),  B2(i,j-1)
+        A2(i,j) -> B1(i,j),  B2(i,j),    B2(i-1,j)
+        """
+        nx_, ny_ = self.nx, self.ny
+        wrap_x = self.pbc in ("x", "xy")
+        wrap_y = self.pbc in ("y", "xy")
+
+        def wrap(i, j):
+            if not (0 <= i < nx_):
+                if not wrap_x: return None
+                i %= nx_
+            if not (0 <= j < ny_):
+                if not wrap_y: return None
+                j %= ny_
+            return i, j
+
+        ax, ay = self.nx // 2, self.ny // 2
+        fA = lambda i, j, b: self.coord_map["A"][(i - ax, j - ay, b)]
+        fB = lambda i, j, b: self.coord_map["B"][(i - ax, j - ay, b)]
+
+        bonds = []
+        for j in range(ny_):
+            for i in range(nx_):
+                bonds.append((fA(i, j, 0), fB(i, j, 0)))
+                w = wrap(i + 1, j)
+                if w: bonds.append((fA(i, j, 0), fB(*w, 0)))
+                w = wrap(i, j - 1)
+                if w: bonds.append((fA(i, j, 0), fB(*w, 1)))
+
+                bonds.append((fA(i, j, 1), fB(i, j, 0)))
+                bonds.append((fA(i, j, 1), fB(i, j, 1)))
+                w = wrap(i - 1, j)
+                if w: bonds.append((fA(i, j, 1), fB(*w, 1)))
+        return bonds
+
+    @property
+    def hamiltonian(self):
+        N = self.la + self.lb
+        H = lil_matrix((N, N))
+        for sub in ("A", "B"):
+            s = self.onsite_energy_sign[sub]
+            d = self.delta[sub]
+            base = 0 if sub == "A" else self.la
+            diag = s * d
+            if self.eps_onsite:
+                diag = diag + (np.random.rand(self.la) - 0.5) * self.eps_onsite
+            for k in range(self.la):
+                H[base + k, base + k] = diag[k]
+        for a, b in self._bond_list():
+            H[a, b] = -self.J
+            H[b, a] = -self.J
+        return H.todok()
+
+    @property
+    def graph(self):
+        M = self.hamiltonian.todense() / (-self.J)
+        np.fill_diagonal(M, 0.)  # onsite terms are not bonds; avoid self-loops
+        return nx.from_numpy_array(M)
+
+    # ======================================================================
+    # Plotting (kept from original, adapted for this layout)
+    # ======================================================================
+
+    def _graphene_layout(self):
+        """{flat_idx: (x, y)} for networkx drawing."""
+        na, nb = self.n_real_pos
+        layout = {k: na[:, k]                for k in range(self.la)}
+        layout.update({k + self.la: nb[:, k] for k in range(self.lb)})
+        return layout
+
+    def plot(self, with_labels=False, labels_type='number',
+             theta_rot=False, color_by_weight=False):
+        G = self.graph
+        node_size = 60
+        figsize = (15, 9) if not color_by_weight else (17, 9)
+        fig, ax = plt.subplots(figsize=figsize)
+
+        pos = self._graphene_layout()
+        if theta_rot:
+            M = np.array([[np.cos(theta_rot), -np.sin(theta_rot)],
+                          [np.sin(theta_rot),  np.cos(theta_rot)]])
+            pos = {n: M @ p for n, p in pos.items()}
+
+        a_nodes = range(self.la)
+        b_nodes = range(self.la, self.la + self.lb)
+
+        if color_by_weight:
+            W = np.abs(self.hamiltonian.todense())
+            emin = np.min(W[W > 0]); emax = np.max(W)
+            colors, widths, elist = [], [], []
+            for u, v in G.edges():
+                w = abs(W[u, v])
+                if w > 0:
+                    elist.append((u, v)); colors.append(w); widths.append(1.0 + w)
+            nx.draw_networkx_edges(G, pos=pos, edgelist=elist,
+                                   width=widths, edge_color=colors,
+                                   edge_cmap=plt.cm.viridis,
+                                   edge_vmin=emin, edge_vmax=emax, ax=ax)
+            sm = plt.cm.ScalarMappable(cmap=plt.cm.viridis,
+                                       norm=plt.Normalize(vmin=emin, vmax=emax))
+            sm.set_array([])
+            plt.colorbar(sm, ax=ax).set_label('Edge Weight')
+        else:
+            nx.draw_networkx_edges(G, pos=pos, ax=ax)
+
+        nx.draw_networkx_nodes(G, pos=pos, nodelist=a_nodes,
+                               node_size=node_size, ax=ax).set_edgecolor('black')
+        nx.draw_networkx_nodes(G, pos=pos, nodelist=b_nodes, node_color="darkorange",
+                               node_size=node_size, ax=ax).set_edgecolor('black')
+
+        if with_labels and labels_type == 'number':
+            labels_pos = {n: p + np.array([0., 0.2]) for n, p in pos.items()}
+            nx.draw_networkx_labels(G, pos=labels_pos, ax=ax)
+
+        ax.set_aspect("equal")
+        plt.box(False)
+        return fig, ax
 
 if __name__ == "__main__":
   CMAP = 'hot'
@@ -497,3 +781,4 @@ if __name__ == "__main__":
     plt.show()
 
     return fig, ax
+

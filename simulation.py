@@ -24,8 +24,10 @@ def add_atom_to_hamiltonian(sys):
   for leg in sys.legs:
     idx = sys.lattice.coord_map[leg.site][leg.pos]
 
-    H[-1, idx] = sys.g * np.exp(1j * leg.phase)
+
+    # the theory on the paper use the convention swapped, beware with that
     H[idx, -1] = np.conjugate(sys.g * np.exp(1j * leg.phase))
+    H[-1, idx] = sys.g * np.exp(1j * leg.phase)
 
   return H
 
